@@ -29,12 +29,33 @@
 // per-channel masses.
 //
 // Collection LAYOUT still defines the daughter ORDER
-// (daughter(0) = J/psi VCC, daughter(1) = bachelor RCC): only the species
+// (daughter(0) = J/psi VCC, daughter(1) = X): only the species
 // TAG moves to the pdgId. See openspec change
 // add-jpsi-x-muons-and-preprod-refinements.
 //
+// N HADRON LEGS (2026-09-30, openspec add-second-jpsix-channel-end-to-end
+// task 1.0b). daughter(1) is a single RecoChargedCandidate only for the
+// one-bachelor channels (B+, Bc). For B0 -> J/psi K*0(-> K pi) and
+// Bs -> J/psi phi(-> K K) it is a nested VCC carrying TWO charged leaves.
+// The old code dynamic_cast<RecoChargedCandidate>(daughter(1)) and skipped
+// the candidate when that failed, so every four-body channel produced
+// nothing at all. daughter(1) is now descended recursively to its charged
+// leaves and each leaf is emitted as its own hadron leg.
+//
+// Legs are ordered BY CHARGE, positive first (`had0` = positive). Charge is
+// unambiguous; pt ordering is not stable against resolution, and for
+// B0 -> K*0 the K/pi assignment is the whole problem, so the ordering rule
+// must not depend on it (design.md D4).
+//
+// BACKWARD COMPATIBILITY IS LOAD-BEARING. The original products
+// (`bachelor`, `bachelorBCandIdx`, `bachelorPdgId`) are still emitted and
+// still carry exactly what they carried before for one-leaf candidates, so
+// the B+ path is bit-identical. Multi-leaf candidates contribute nothing to
+// them. New consumers use the `hadron*` products, which cover both cases.
+//
 // No fit code, no candidate-level cuts. Stage-1 already selected.
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -83,7 +104,34 @@ JpsiKCandidateSplitter::JpsiKCandidateSplitter(const edm::ParameterSet& iConfig)
   produces<std::vector<int>>("bachelorPdgId");
   produces<std::vector<int>>("muon0PdgId");
   produces<std::vector<int>>("muon1PdgId");
+  // N-leg products (task 1.0b). Flat across candidates: one entry per
+  // hadron leg, with `hadronBCandIdx` giving the source candidate and
+  // `hadronLegIdx` the leg's position within it (0 = positive by charge).
+  produces<reco::TrackCollection>("hadron");
+  produces<std::vector<int>>("hadronBCandIdx");
+  produces<std::vector<int>>("hadronLegIdx");
+  produces<std::vector<int>>("hadronPdgId");
+  produces<std::vector<int>>("nHadronLegs");  // one entry per emitted candidate
 }
+
+namespace {
+// Collect the charged leaves under `cand`, descending composite daughters.
+// A RecoChargedCandidate IS a leaf and is not descended further.
+void collectChargedLeaves(const reco::Candidate* cand,
+                          std::vector<const reco::RecoChargedCandidate*>& out,
+                          int depth = 0) {
+  if (cand == nullptr || depth > 4) {
+    return;
+  }
+  if (const auto* rcc = dynamic_cast<const reco::RecoChargedCandidate*>(cand)) {
+    out.push_back(rcc);
+    return;
+  }
+  for (std::size_t i = 0; i < cand->numberOfDaughters(); ++i) {
+    collectChargedLeaves(cand->daughter(i), out, depth + 1);
+  }
+}
+}  // namespace
 
 void JpsiKCandidateSplitter::produce(edm::Event& iEvent, const edm::EventSetup&) {
   edm::Handle<reco::VertexCompositeCandidateCollection> bplusH;
@@ -96,6 +144,11 @@ void JpsiKCandidateSplitter::produce(edm::Event& iEvent, const edm::EventSetup&)
   auto outBachelorPdg = std::make_unique<std::vector<int>>();
   auto outMuon0Pdg = std::make_unique<std::vector<int>>();
   auto outMuon1Pdg = std::make_unique<std::vector<int>>();
+  auto outHadron = std::make_unique<reco::TrackCollection>();
+  auto outHadronIdx = std::make_unique<std::vector<int>>();
+  auto outHadronLeg = std::make_unique<std::vector<int>>();
+  auto outHadronPdg = std::make_unique<std::vector<int>>();
+  auto outNLegs = std::make_unique<std::vector<int>>();
 
   int nSkip = 0;
   outDimuon->reserve(bplusH->size());
@@ -105,6 +158,11 @@ void JpsiKCandidateSplitter::produce(edm::Event& iEvent, const edm::EventSetup&)
   outBachelorPdg->reserve(bplusH->size());
   outMuon0Pdg->reserve(bplusH->size());
   outMuon1Pdg->reserve(bplusH->size());
+  outHadron->reserve(2 * bplusH->size());
+  outHadronIdx->reserve(2 * bplusH->size());
+  outHadronLeg->reserve(2 * bplusH->size());
+  outHadronPdg->reserve(2 * bplusH->size());
+  outNLegs->reserve(bplusH->size());
 
   for (std::size_t ib = 0; ib < bplusH->size(); ++ib) {
     const reco::VertexCompositeCandidate& bplus = (*bplusH)[ib];
@@ -118,9 +176,7 @@ void JpsiKCandidateSplitter::produce(edm::Event& iEvent, const edm::EventSetup&)
     // openspec add-jpsi-x-muons-and-preprod-refinements).
     const auto* dJpsi = dynamic_cast<const reco::VertexCompositeCandidate*>(
         bplus.daughter(0));
-    const auto* dBach = dynamic_cast<const reco::RecoChargedCandidate*>(
-        bplus.daughter(1));
-    if (!dJpsi || !dBach) {
+    if (!dJpsi) {
       ++nSkip;
       continue;
     }
@@ -128,20 +184,58 @@ void JpsiKCandidateSplitter::produce(edm::Event& iEvent, const edm::EventSetup&)
       ++nSkip;
       continue;
     }
-    if (dBach->track().isNull()) {
+
+    // daughter(1) is the X: one charged track (B+, Bc) or a nested VCC with
+    // two charged leaves (K*0 -> K pi, phi -> K K, Ks -> pi pi, Lambda -> p pi).
+    std::vector<const reco::RecoChargedCandidate*> leaves;
+    collectChargedLeaves(bplus.daughter(1), leaves);
+    if (leaves.empty()) {
+      ++nSkip;
+      continue;
+    }
+    bool allHaveTracks = true;
+    for (const auto* l : leaves) {
+      if (l->track().isNull()) {
+        allHaveTracks = false;
+        break;
+      }
+    }
+    if (!allHaveTracks) {
       ++nSkip;
       continue;
     }
 
+    // Order legs by charge, positive first. Stable for equal charges, so a
+    // same-sign pair keeps its Stage-1 order rather than being reordered
+    // arbitrarily run to run.
+    std::stable_sort(leaves.begin(), leaves.end(),
+                     [](const reco::RecoChargedCandidate* a,
+                        const reco::RecoChargedCandidate* b) {
+                       return a->charge() > b->charge();
+                     });
+
     outDimuon->push_back(*dJpsi);
     outDimuonIdx->push_back(static_cast<int>(ib));
-
-    outBachelor->push_back(*dBach->track());
-    outBachelorIdx->push_back(static_cast<int>(ib));
-
-    outBachelorPdg->push_back(dBach->pdgId());
     outMuon0Pdg->push_back(dJpsi->daughter(0)->pdgId());
     outMuon1Pdg->push_back(dJpsi->daughter(1)->pdgId());
+
+    // Legacy one-bachelor products: populated only for single-leaf
+    // candidates, with exactly the content they had before, so the B+ path
+    // is bit-identical across this change.
+    if (leaves.size() == 1) {
+      outBachelor->push_back(*leaves[0]->track());
+      outBachelorIdx->push_back(static_cast<int>(ib));
+      outBachelorPdg->push_back(leaves[0]->pdgId());
+    }
+
+    // N-leg products: always populated, one entry per leg.
+    for (std::size_t il = 0; il < leaves.size(); ++il) {
+      outHadron->push_back(*leaves[il]->track());
+      outHadronIdx->push_back(static_cast<int>(ib));
+      outHadronLeg->push_back(static_cast<int>(il));
+      outHadronPdg->push_back(leaves[il]->pdgId());
+    }
+    outNLegs->push_back(static_cast<int>(leaves.size()));
   }
 
   if (nSkip > 0) {
@@ -157,6 +251,11 @@ void JpsiKCandidateSplitter::produce(edm::Event& iEvent, const edm::EventSetup&)
   iEvent.put(std::move(outBachelorPdg), "bachelorPdgId");
   iEvent.put(std::move(outMuon0Pdg), "muon0PdgId");
   iEvent.put(std::move(outMuon1Pdg), "muon1PdgId");
+  iEvent.put(std::move(outHadron), "hadron");
+  iEvent.put(std::move(outHadronIdx), "hadronBCandIdx");
+  iEvent.put(std::move(outHadronLeg), "hadronLegIdx");
+  iEvent.put(std::move(outHadronPdg), "hadronPdgId");
+  iEvent.put(std::move(outNLegs), "nHadronLegs");
 }
 
 }  // namespace ana_hitanalyzer
