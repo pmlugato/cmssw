@@ -172,6 +172,21 @@ opts.register('kaonAsMuon', False, VarParsing.VarParsing.multiplicity.singleton,
               'B+ config still uses the hard-coded kaon mass hypothesis; the '
               'multi-channel Stage-2 (Bc/K*0/phi/Ks/Lambda/psi2S) will consume '
               'the pdgId branches to pick the mass hypothesis per event.')
+opts.register('channels', '', VarParsing.VarParsing.multiplicity.singleton,
+              VarParsing.VarParsing.varType.string,
+              'comma-separated J/psi+X channel suffixes to run in ONE job, '
+              'e.g. "BPlus,B0Kstar,BsPhi". When set, the per-channel Stage-1 '
+              'collections are MERGED and the whole chain runs once over the '
+              'merged collection, so the J/psi muons are refit once per event '
+              'rather than once per channel and every channel sees the same '
+              'refit by construction (openspec design.md D9d). The table '
+              'gains a channelId column indexing this list. Overrides '
+              'srcCandidates. Empty (default) = single-channel behaviour.')
+opts.register('tableName', '', VarParsing.VarParsing.multiplicity.singleton,
+              VarParsing.VarParsing.varType.string,
+              'NanoAOD candidate-table name. Empty (default) derives it from '
+              'srcCandidates via _TABLE_NAMES below. B+ keeps the legacy name '
+              '"BuJpsiK" so its output is unchanged.')
 opts.register('hadronMode', 'hadron', VarParsing.VarParsing.multiplicity.singleton,
               VarParsing.VarParsing.varType.string,
               "CandidateLeafTrackProducer mode for the hadron legs. "
@@ -516,6 +531,25 @@ process.offlineBeamSpot = cms.EDProducer('BeamSpotProducer')
 # ---- two-track maker (J/psi side, mass-constraint ON) ---------------------
 from Analysis.HitAnalyzer.ResidualGlobalCorrectionMakerTwoTrackJpsiKMuMuG4e_cfi \
     import globalCorJpsiK
+# Multi-channel: merge the per-channel Stage-1 VCCs and run the chain ONCE
+# over the merged collection (design.md D9d). The alternative -- N chains
+# sharing a deduplicated track collection -- needs every channel's
+# (candIdx, leafIdx) remapped into the merged refit output, which is the
+# intricate part of the AlCaReco step. Merging the CANDIDATES removes that
+# layer entirely, and pays the muon refit once per event instead of once per
+# channel.
+_CHANNEL_LIST = [c.strip() for c in opts.channels.split(',') if c.strip()]
+if _CHANNEL_LIST:
+    process.jpsiXMerged = cms.EDProducer(
+        'JpsiXCandidateMerger',
+        src=cms.VInputTag(*[
+            cms.InputTag('ALCARECOTkAlJpsiX{}Resonances'.format(c))
+            for c in _CHANNEL_LIST]),
+    )
+    opts.srcCandidates = 'jpsiXMerged'
+    print('[runCvhBplusJpsiK] MULTI-CHANNEL: merging {} -> jpsiXMerged'
+          .format(', '.join(_CHANNEL_LIST)), flush=True)
+
 _src_cands = cms.InputTag(*opts.srcCandidates.split(':')) \
     if ':' in opts.srcCandidates else cms.InputTag(opts.srcCandidates)
 # Reading the nested stage-1 B+ VCC directly: the maker descends daughter(0)
@@ -681,6 +715,8 @@ if opts.emitRefitTracks and opts.mode not in ('both', 'kaon'):
     raise ValueError('emitRefitTracks=True needs the single-track makers; use '
                      'mode="both" (default) or "kaon", not mode="%s"' % opts.mode)
 _seq = process.offlineBeamSpot
+if _CHANNEL_LIST:
+    _seq = _seq * process.jpsiXMerged
 if _uses_splitter:
     _seq = _seq * process.jpsiKCandidateSplitter
 elif opts.mode in ('both', 'kaon'):
@@ -787,12 +823,44 @@ if opts.nanoOut:
     process.globalCorJpsiKKaon.fillTrackTree = cms.bool(False)
 
     _cor = 'globalCorJpsiK'
+    # Table name per channel. B+ keeps "BuJpsiK" so the existing histmaker and
+    # every downstream branch-name contract are untouched; the other channels
+    # get their own names so two channels can coexist in one file (required by
+    # the one-job-all-channels layout, openspec design.md D9c).
+    _TABLE_NAMES = {
+        'BPlusResonances':   ('BuJpsiK',           'B+ -> J/psi K+'),
+        'B0KstarResonances': ('B0JpsiKstar',       'B0 -> J/psi K*0(-> K+ pi-)'),
+        'BsPhiResonances':   ('BsJpsiPhi',         'Bs -> J/psi phi(-> K+ K-)'),
+        'BcResonances':      ('BcJpsiPi',          'Bc -> J/psi pi'),
+        'B0KsResonances':    ('B0JpsiKs',          'B0 -> J/psi Ks(-> pi+ pi-)'),
+        'LambdabResonances': ('LambdabJpsiLambda', 'Lambda_b -> J/psi Lambda(-> p pi)'),
+        'Psi2SResonances':   ('Psi2SJpsiPiPi',     'psi(2S) -> J/psi pi+ pi-'),
+    }
+    if _CHANNEL_LIST:
+        _tbl_name = opts.tableName or 'JpsiX'
+        _tbl_chan = 'merged ' + '+'.join(_CHANNEL_LIST)
+    elif opts.tableName:
+        _tbl_name, _tbl_chan = opts.tableName, opts.srcCandidates
+    else:
+        _tbl_name, _tbl_chan = 'BuJpsiK', 'B+ -> J/psi K+'
+        for _key, (_nm, _desc) in _TABLE_NAMES.items():
+            if opts.srcCandidates.endswith(_key):
+                _tbl_name, _tbl_chan = _nm, _desc
+                break
+        else:
+            print('[runCvhBplusJpsiK] WARNING: srcCandidates={!r} matches no '
+                  'entry in _TABLE_NAMES; falling back to table name '
+                  '"BuJpsiK". Pass tableName=<name> explicitly.'
+                  .format(opts.srcCandidates), flush=True)
+    print('[runCvhBplusJpsiK] nano table: {} ({})'.format(_tbl_name, _tbl_chan),
+          flush=True)
+
     process.bplusTable = cms.EDProducer(
         'SimpleVertexCompositeCandidateFlatTableProducer',
         src=_src_cands,
         cut=cms.string(''),
-        name=cms.string('BuJpsiK'),
-        doc=cms.string('B+ -> J/psi K+ stage-1 candidates, raw + CVH-refit'),
+        name=cms.string(_tbl_name),
+        doc=cms.string(_tbl_chan + ' stage-1 candidates, raw + CVH-refit'),
         singleton=cms.bool(False), extension=cms.bool(False),
         variables=cms.PSet(
             P3Vars,
@@ -877,6 +945,17 @@ if opts.nanoOut:
             kaonTrackIdx=ExtVar(cms.InputTag('bplusLeafIdx', 'bach0TrackIdx'), int, doc='bachelor kaon row in Track'),
         ),
     )
+
+    if _CHANNEL_LIST:
+        # Which input channel each merged candidate came from. Indexes
+        # _CHANNEL_LIST, whose order is also stored by the merger as
+        # `srcLabels`. Without this the merged table is unusable: every row
+        # would be an anonymous J/psi+X candidate.
+        process.bplusTable.externalVariables.channelId = ExtVar(
+            cms.InputTag('jpsiXMerged', 'channelIdMap'), int,
+            doc='index into the merged channel list: '
+                + ', '.join('{}={}'.format(_i, _c)
+                            for _i, _c in enumerate(_CHANNEL_LIST)))
 
     # Two-track dimuon CVH arm (cor*). Added here rather than inline so the arm
     # can be switched off without leaving dangling InputTags -- production runs
