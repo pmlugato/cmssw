@@ -870,10 +870,17 @@ if opts.nanoOut:
             nDau=Var('numberOfDaughters', 'int16', doc='n daughters'),
             jpsiPt=Var('daughter(0).pt', float, doc='J/psi (daughter0) pt'),
             jpsiPdgId=Var('daughter(0).pdgId', int, doc='J/psi pdgId'),
-            kaonPt=Var('daughter(1).pt', float, doc='bachelor pt'),
+            # CAREFUL: daughter(1) is the bachelor TRACK for B+/Bc, but the
+            # COMPOSITE X (K*0, phi, Ks, Lambda) for every four-body channel.
+            # So for those channels these describe the resonance, not a hadron
+            # -- kaonPdgId reads 313 for K*0 and 333 for phi, not +-321. The
+            # per-track quantities come from Track via kaonTrackIdx /
+            # had1TrackIdx, and the fitted ones from jointCvhLeg{2,3}*.
+            # Names kept for B+ branch-contract compatibility.
+            kaonPt=Var('daughter(1).pt', float, doc='daughter(1) pt: the bachelor for 3-body, the composite X for 4-body'),
             kaonEta=Var('daughter(1).eta', float, doc='bachelor eta'),
             kaonPhi=Var('daughter(1).phi', float, doc='bachelor phi'),
-            kaonPdgId=Var('daughter(1).pdgId', int, doc='bachelor signed pdgId'),
+            kaonPdgId=Var('daughter(1).pdgId', int, doc='daughter(1) pdgId: +-321 bachelor for 3-body, 313/333/310/3122 composite for 4-body'),
         ),
         externalVariables=cms.PSet(
             # ---- Fitted mother, three arms (naming per proposal 2026-07-28) ----
@@ -942,7 +949,8 @@ if opts.nanoOut:
             # Track_dedxHarmonic2[BuJpsiK_kaonTrackIdx[i]] downstream.
             mu0TrackIdx=ExtVar(cms.InputTag('bplusLeafIdx', 'mu0TrackIdx'), int, doc='J/psi mu0 row in Track'),
             mu1TrackIdx=ExtVar(cms.InputTag('bplusLeafIdx', 'mu1TrackIdx'), int, doc='J/psi mu1 row in Track'),
-            kaonTrackIdx=ExtVar(cms.InputTag('bplusLeafIdx', 'bach0TrackIdx'), int, doc='bachelor kaon row in Track'),
+            kaonTrackIdx=ExtVar(cms.InputTag('bplusLeafIdx', 'bach0TrackIdx'), int, doc='first hadron leg row in Track (the bachelor kaon for B+)'),
+            had1TrackIdx=ExtVar(cms.InputTag('bplusLeafIdx', 'bach1TrackIdx'), int, doc='SECOND hadron leg row in Track; -1 for three-body channels'),
         ),
     )
 
@@ -1019,10 +1027,13 @@ if opts.nanoOut:
         _ev.jointCvhSl3d = ExtVar(cms.InputTag(_jg, 'sl3d'), float, doc='B 3D flight significance, joint CVH')
         _ev.jointCvhAlpha3dPV = ExtVar(cms.InputTag(_jg, 'alpha3dPV'), float, doc='B 3D pointing angle wrt PV, joint CVH')
         # Per-leg FITTED momenta, decomposition leaf order (mu-, mu+, K for a
-        # B+). Fixed-index scalar columns because a nano flat table cannot hold
-        # a variable-length ValueMap<vector<float>>; absent legs are -99.
-        # Leaf order matches the mu0/mu1/kaonTrackIdx cross-links above.
-        for _i in range(3):
+        # B+; mu-, mu+, h0, h1 for a four-body channel). Fixed-index scalar
+        # columns because a nano flat table cannot hold a variable-length
+        # ValueMap<vector<float>>; absent legs are -99.
+        # Leaf order matches the mu0/mu1/bach{0,1}TrackIdx cross-links above.
+        # The maker emits kMaxLegs = 4 of these; the loop used to stop at 3,
+        # which silently dropped the SECOND hadron of every four-body channel.
+        for _i in range(4):
             setattr(_ev, f'jointCvhLeg{_i}Pt',
                     ExtVar(cms.InputTag(_j, f'leg{_i}Pt'), float, doc=f'leg {_i} fitted pt, joint CVH'))
             setattr(_ev, f'jointCvhLeg{_i}Eta',
