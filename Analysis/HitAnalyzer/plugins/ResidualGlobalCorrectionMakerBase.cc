@@ -157,6 +157,12 @@ ResidualGlobalCorrectionMakerBase::ResidualGlobalCorrectionMakerBase(const edm::
   if (!bCandIdxSrcTag_.label().empty()) {
     bCandIdxToken_ = consumes<std::vector<int>>(bCandIdxSrcTag_);
   }
+  trackPdgIdSrcTag_ = iConfig.existsAs<edm::InputTag>("trackPdgIdSrc")
+      ? iConfig.getParameter<edm::InputTag>("trackPdgIdSrc") : edm::InputTag();
+  if (!trackPdgIdSrcTag_.label().empty()) {
+    trackPdgIdToken_ = consumes<std::vector<int>>(trackPdgIdSrcTag_);
+  }
+
 
   fitFromGenParms_ = iConfig.getParameter<bool>("fitFromGenParms");
   fitFromSimParms_ = iConfig.getParameter<bool>("fitFromSimParms");

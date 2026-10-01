@@ -288,6 +288,15 @@ protected:
   // Empty => no branch added; bCandIdx member stays at sentinel -1.
   edm::EDGetTokenT<std::vector<int>> bCandIdxToken_;
   edm::InputTag bCandIdxSrcTag_;
+  // Optional per-row signed PDG id, positionally parallel to the same source
+  // collection as bCandIdxSrc. When configured, the mass hypothesis and the
+  // Geant4 particle name are taken PER TRACK from this, instead of from the
+  // single job-level `trackParticleName`. Needed because a four-body channel
+  // can carry two hadron legs of different species in one event
+  // (B0 -> J/psi K*0(-> K pi)), which no single string can describe.
+  // Empty => legacy behaviour, every track uses `trackParticleName`.
+  edm::EDGetTokenT<std::vector<int>> trackPdgIdToken_;
+  edm::InputTag trackPdgIdSrcTag_;
   edm::EDGetTokenT<std::vector<int> > inputIndices_;
   edm::EDGetTokenT<reco::BeamSpot> inputBs_;
 // edm::EDGetTokenT<std::vector<PSimHit>> inputSimHits_;

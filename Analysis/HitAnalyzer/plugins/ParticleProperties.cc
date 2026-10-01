@@ -1,5 +1,7 @@
 #include "Analysis/HitAnalyzer/interface/ParticleProperties.h"
 
+#include <cstdlib>
+
 namespace ana_hitanalyzer {
 
 // PDG 2024 values (https://pdg.lbl.gov)
@@ -15,6 +17,17 @@ ParticleProperties getParticleProperties(const std::string &base) {
   if (base == "proton") return {0.93827208943,   0.00000000029};
   if (base == "e")      return {0.000510998950,  0.0000000000040};
   return {0.0, 0.0};
+}
+
+std::string particleBaseFromPdgId(int pdgId) {
+  switch (std::abs(pdgId)) {
+    case 13:   return "mu";
+    case 211:  return "pi";
+    case 321:  return "kaon";
+    case 2212: return "proton";
+    case 11:   return "e";
+    default:   return std::string();
+  }
 }
 
 std::string g4ParticleName(const std::string &base, int charge) {

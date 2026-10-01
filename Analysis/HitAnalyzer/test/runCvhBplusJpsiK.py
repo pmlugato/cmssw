@@ -172,6 +172,20 @@ opts.register('kaonAsMuon', False, VarParsing.VarParsing.multiplicity.singleton,
               'B+ config still uses the hard-coded kaon mass hypothesis; the '
               'multi-channel Stage-2 (Bc/K*0/phi/Ks/Lambda/psi2S) will consume '
               'the pdgId branches to pick the mass hypothesis per event.')
+opts.register('hadronMode', 'hadron', VarParsing.VarParsing.multiplicity.singleton,
+              VarParsing.VarParsing.varType.string,
+              "CandidateLeafTrackProducer mode for the hadron legs. "
+              "'hadron' (default) takes every charged leaf not under the "
+              "J/psi, at any nesting depth, so it serves both the "
+              "one-bachelor channels and the four-body ones. 'bachelor' is "
+              "the legacy mode: DIRECT leaf daughters only, which is EMPTY "
+              "for B0->K*0 and Bs->phi. Kept only for A/B comparison.")
+opts.register('perTrackMass', True, VarParsing.VarParsing.multiplicity.singleton,
+              VarParsing.VarParsing.varType.bool,
+              'resolve the hadron mass hypothesis PER TRACK from the leg '
+              'pdgId instead of the single job-level trackParticleName. '
+              'Required for B0->K*0, whose two legs are different species. '
+              'Set False to reproduce the legacy hard-coded-kaon behaviour.')
 opts.register('plimit', 0.05, VarParsing.VarParsing.multiplicity.singleton,
               VarParsing.VarParsing.varType.float,
               'Geant4ePropagator PropagationPtotLimit [GeV/c]. Default 0.05: '
@@ -457,18 +471,30 @@ print('[runCvhBplusJpsiK] calibration output: '
 # CandidateLeafTrackProducer extracts the bachelor (direct leaf-daughter) tracks
 # generically -- so JpsiKCandidateSplitter is only needed for the legacy
 # pre-split A/B path (srcCandidates=jpsiKCandidateSplitter:*).
+# Hadron-leg extraction. `mode='hadron'` collects every charged leaf not
+# under daughter(0), at any nesting depth, so it serves BOTH the
+# one-bachelor channels (B+, Bc) and the four-body ones (B0 -> K*0 -> K pi,
+# Bs -> phi -> K K). `mode='bachelor'` took only DIRECT leaf daughters and
+# therefore returned an EMPTY set for every four-body channel -- see the
+# header of CandidateLeafTrackProducer.cc and openspec design.md D9a-bis.
+#
+# For one-bachelor channels the two modes agree element for element
+# (verified 2026-09-30 on 3702 B+ candidates: momentum, chi2, ndof, charge,
+# candIdx and pdgId all identical), so this is a no-op on the B+ path.
 _uses_splitter = 'jpsiKCandidateSplitter' in opts.srcCandidates
 if _uses_splitter:
     from Analysis.HitAnalyzer.JpsiKCandidateSplitter_cfi import jpsiKCandidateSplitter
     process.jpsiKCandidateSplitter = jpsiKCandidateSplitter.clone()
-    _bach_src = cms.InputTag('jpsiKCandidateSplitter', 'bachelor')
-    _bach_idx = cms.InputTag('jpsiKCandidateSplitter', 'bachelorBCandIdx')
+    _bach_src = cms.InputTag('jpsiKCandidateSplitter', 'hadron')
+    _bach_idx = cms.InputTag('jpsiKCandidateSplitter', 'hadronBCandIdx')
+    _bach_pdg = cms.InputTag('jpsiKCandidateSplitter', 'hadronPdgId')
 else:
     process.bplusBachelorTracks = cms.EDProducer(
         'CandidateLeafTrackProducer', src=cms.InputTag(opts.srcCandidates),
-        mode=cms.string('bachelor'))
+        mode=cms.string(opts.hadronMode))
     _bach_src = cms.InputTag('bplusBachelorTracks')
     _bach_idx = cms.InputTag('bplusBachelorTracks', 'candIdx')
+    _bach_pdg = cms.InputTag('bplusBachelorTracks', 'pdgId')
 
 # The refit ARM of the B fit also needs the muon legs refit (add-cvh-refit-tracks-
 # into-bfit). The muons are the leaves of daughter(0) (the J/psi), so a second
@@ -538,6 +564,11 @@ process.globalCorJpsiKKaon = globalCorJpsiKKaon.clone(
     # Mass-hypothesis knob: override the propagation hypothesis from "kaon" to "mu"
     # while leaving the input track collection (bachelor kaons) untouched.
     trackParticleName=cms.string('mu' if opts.kaonAsMuon else 'kaon'),
+    # Per-track mass hypothesis from the leg pdgId. Empty InputTag => the
+    # maker falls back to trackParticleName above, which is the legacy
+    # behaviour and is what kaonAsMuon's A/B test needs.
+    trackPdgIdSrc=(_bach_pdg if (opts.perTrackMass and not opts.kaonAsMuon)
+                   else cms.InputTag('')),
     emitRefitTracks=cms.bool(bool(opts.emitRefitTracks)),
     refitMaxRelPtErr=cms.double(float(opts.refitMaxRelPtErr)),
     # Track-keyed reference-point jacobian (5 x nParms) + global indices. The

@@ -19,6 +19,16 @@ struct ParticleProperties {
 // guard against this (typically by requiring a non-empty cfi parameter).
 ParticleProperties getParticleProperties(const std::string &base);
 
+// Map a signed PDG id onto the particle base name used above. Recognised:
+//   13 -> "mu", 211 -> "pi", 321 -> "kaon", 2212 -> "proton", 11 -> "e".
+// Returns "" for anything else, so callers can fall back to their
+// configured default rather than silently fitting with a zero mass.
+// Added 2026-09-30 for the per-leg mass hypothesis on multi-hadron
+// channels (openspec add-second-jpsix-channel-end-to-end, task 1.0a):
+// B0 -> J/psi K*0(-> K pi) has two hadron legs of DIFFERENT species, so a
+// single job-level `trackParticleName` cannot describe the event.
+std::string particleBaseFromPdgId(int pdgId);
+
 // Build the Geant4 particle-name string from a base name + track charge.
 //   Empty `base` returns empty string -> caller falls back to whatever
 //                                        default the propagator was

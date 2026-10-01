@@ -19,6 +19,22 @@
 //   B+ -> [J/psi] K            : composite {J/psi}, leaf {K}     -> bachelor {K}, jpsi {mu,mu}
 //   Bc -> [J/psi] pi           : composite {J/psi}, leaf {pi}    -> bachelor {pi}
 //   B0 -> [J/psi] [K*0]        : composite {J/psi, K*0}, leaf {} -> bachelor {}
+//                                ... which is EMPTY, and that is why every
+//                                four-body channel produced nothing. Use mode
+//                                "hadron" instead (added 2026-09-30, openspec
+//                                add-second-jpsix-channel-end-to-end task 1.0a).
+//
+//   "hadron"             : every charged leaf NOT under daughter(0), whether it
+//                          is a direct daughter (B+, Bc) or nested inside a
+//                          composite X (B0 -> K*0 -> K pi, Bs -> phi -> K K).
+//                          For one-bachelor channels this is identical to
+//                          "bachelor", element for element, so it is the single
+//                          mode that serves every channel.
+//
+// Leaf ORDER is the canonical collectLeaves order in every mode, deliberately.
+// `leafIdx` is what JpsiXKinematicFitProducer uses to map a refit track back to
+// its leaf, so reordering here would break that mapping. The order-by-charge
+// contract for the two hadron legs is applied downstream, at the branch level.
 //
 // Emitted products:
 //   reco::TrackCollection (unlabeled) : the selected leaf tracks (value copies,
@@ -76,12 +92,18 @@ public:
             cfg.getParameter<edm::InputTag>("src"))),
         mode_(cfg.existsAs<std::string>("mode") ? cfg.getParameter<std::string>("mode")
                                                 : std::string("bachelor")) {
-    if (mode_ != "bachelor" && mode_ != "jpsi")
+    if (mode_ != "bachelor" && mode_ != "jpsi" && mode_ != "hadron")
       throw cms::Exception("Configuration")
-          << "CandidateLeafTrackProducer mode must be bachelor|jpsi, got '" << mode_ << "'";
+          << "CandidateLeafTrackProducer mode must be bachelor|jpsi|hadron, got '"
+          << mode_ << "'";
     tracksPut_ = produces<reco::TrackCollection>();
     candIdxPut_ = produces<std::vector<int>>("candIdx");
     leafIdxPut_ = produces<std::vector<int>>("leafIdx");
+    // Signed PDG id per emitted track, parallel to the track collection.
+    // Feeds the single-track maker's `trackPdgIdSrc` so the mass hypothesis
+    // is resolved PER TRACK -- required once a candidate carries two hadron
+    // legs of different species (K and pi from a K*0).
+    pdgIdPut_ = produces<std::vector<int>>("pdgId");
   }
 
   void produce(edm::Event& iEvent, const edm::EventSetup&) override {
@@ -91,8 +113,10 @@ public:
     auto tracks = std::make_unique<reco::TrackCollection>();
     auto candIdx = std::make_unique<std::vector<int>>();
     auto leafIdx = std::make_unique<std::vector<int>>();
+    auto pdgId = std::make_unique<std::vector<int>>();
 
     const bool wantJpsi = (mode_ == "jpsi");
+    const bool wantHadron = (mode_ == "hadron");
 
     for (size_t ic = 0; ic < candH->size(); ++ic) {
       const auto& cand = (*candH)[ic];
@@ -116,6 +140,11 @@ public:
         if (wantJpsi) {
           for (const auto* j : jpsiLeaves)
             if (j == leaf) { selected = true; break; }
+        } else if (wantHadron) {
+          // Everything that is not a J/psi leaf, at any nesting depth.
+          selected = true;
+          for (const auto* j : jpsiLeaves)
+            if (j == leaf) { selected = false; break; }
         } else {
           // bachelor: leaf is a DIRECT daughter of the candidate.
           for (size_t id = 0; id < cand.numberOfDaughters(); ++id)
@@ -129,12 +158,14 @@ public:
         tracks->push_back(*leaf->track());  // value copy keeps the TrackExtraRef
         candIdx->push_back(static_cast<int>(ic));
         leafIdx->push_back(static_cast<int>(g));
+        pdgId->push_back(leaf->pdgId());
       }
     }
 
     iEvent.put(tracksPut_, std::move(tracks));
     iEvent.put(candIdxPut_, std::move(candIdx));
     iEvent.put(leafIdxPut_, std::move(leafIdx));
+    iEvent.put(pdgIdPut_, std::move(pdgId));
   }
 
 private:
@@ -143,6 +174,7 @@ private:
   edm::EDPutTokenT<reco::TrackCollection> tracksPut_;
   edm::EDPutTokenT<std::vector<int>> candIdxPut_;
   edm::EDPutTokenT<std::vector<int>> leafIdxPut_;
+  edm::EDPutTokenT<std::vector<int>> pdgIdPut_;
 };
 
 }  // namespace ana_hitanalyzer

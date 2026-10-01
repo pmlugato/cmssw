@@ -869,7 +869,18 @@ void ResidualGlobalCorrectionMakerG4e::produce(edm::Event &iEvent, const edm::Ev
   // Track mass for energy / Jacobian calculations -- read from cfi
   // (default = muon mass for J/psi/Upsilon back-compat). Renamed from
   // the previous local `constexpr double trackmass = 0.1056583745;`.
-  const double trackmass = trackMass_;
+  // NOTE 2026-09-30: this is now only the FALLBACK. When `trackPdgIdSrc`
+  // is configured the species is resolved per track inside the loop below,
+  // because a four-body channel carries two hadron legs of different
+  // species in one event (openspec add-second-jpsix-channel-end-to-end,
+  // task 1.0a).
+  const double trackmassFallback = trackMass_;
+
+  // Optional per-row signed PDG id, positionally parallel to trackOrigH.
+  Handle<std::vector<int>> trackPdgIdH;
+  if (!trackPdgIdSrcTag_.label().empty()) {
+    iEvent.getByToken(trackPdgIdToken_, trackPdgIdH);
+  }
 
   Handle<reco::BeamSpot> bsH;
   iEvent.getByToken(inputBs_, bsH);
@@ -1004,6 +1015,21 @@ void ResidualGlobalCorrectionMakerG4e::produce(edm::Event &iEvent, const edm::Ev
     // -1 if the optional input is absent or shorter than expected.
     bCandIdx = (bCandIdxH.isValid() && itrack < bCandIdxH->size())
         ? (*bCandIdxH)[itrack] : -1;
+
+    // Per-track mass hypothesis (task 1.0a). Falls back to the job-level
+    // `trackParticleName` whenever the optional input is absent, short, or
+    // carries a pdgId this build has no mass for -- so an unrecognised id
+    // degrades to the configured default rather than fitting with mass 0.
+    std::string trackPartName = trackParticleName_;
+    double trackmass = trackmassFallback;
+    if (trackPdgIdH.isValid() && itrack < trackPdgIdH->size()) {
+      const std::string base =
+          ana_hitanalyzer::particleBaseFromPdgId((*trackPdgIdH)[itrack]);
+      if (!base.empty()) {
+        trackPartName = base;
+        trackmass = ana_hitanalyzer::getParticleProperties(base).mass;
+      }
+    }
 
     // Note: the Geant4 particle name (charge-dependent) is built per fit
     // attempt inside the runHypothesis lambda below, so the two-hypothesis
@@ -1777,7 +1803,7 @@ void ResidualGlobalCorrectionMakerG4e::produce(edm::Event &iEvent, const edm::Ev
     // reset the mutable reference state to the seed and apply this attempt's charge
     refFts = refFtsSeed;
     refFts[6] = effSeedSign * track.charge();
-    const std::string g4PartName = ana_hitanalyzer::g4ParticleName(trackParticleName_, effSeedSign * track.charge());
+    const std::string g4PartName = ana_hitanalyzer::g4ParticleName(trackPartName, effSeedSign * track.charge());
 
     if (dopca) {
       // enforce that reference state is really a consistent PCA to the beamline (by adjusting the reference position if needed)
