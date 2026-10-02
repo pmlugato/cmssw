@@ -294,9 +294,16 @@ private:
   edm::EDPutTokenT<edm::ValueMap<int>> outGenBPdgId_, outGenBIdx_;
   // Per-leg generator match (leg 0/1 = muons, leg 2 = bachelor) and the common
   // ancestor of the matched legs. The ancestor's species IS the truth category.
-  std::array<edm::EDPutTokenT<edm::ValueMap<int>>, 3> outLegGenIdx_, outLegGenPdgId_,
-      outLegGenMotherPdgId_;
-  std::array<edm::EDPutTokenT<edm::ValueMap<float>>, 3> outLegGenPt_, outLegGenDR_;
+  // Per-leg generator match. Four, not three: a four-body channel
+  // (B0 -> J/psi K*0(-> K pi), Bs -> J/psi phi(-> K K)) has two hadron legs,
+  // and capping at 3 left the SECOND one with no gen information at all --
+  // which is exactly the quantity the K/pi momentum-sharing study needs.
+  // Matches kMaxLegs in ResidualGlobalCorrectionMakerNTrackG4e.
+  static constexpr size_t kMaxGenLegs = 4;
+  std::array<edm::EDPutTokenT<edm::ValueMap<int>>, kMaxGenLegs> outLegGenIdx_,
+      outLegGenPdgId_, outLegGenMotherPdgId_;
+  std::array<edm::EDPutTokenT<edm::ValueMap<float>>, kMaxGenLegs> outLegGenPt_,
+      outLegGenDR_;
   edm::EDPutTokenT<edm::ValueMap<int>> outAncPdgId_, outAncIdx_, outNLegsMatched_;
   edm::EDPutTokenT<edm::ValueMap<float>> outAncPt_, outAncMass_;
   const double genLegMaxDR_, genLegMaxRelDPt_;
@@ -381,7 +388,7 @@ JpsiXKinematicFitProducer::JpsiXKinematicFitProducer(const edm::ParameterSet& cf
   outGenBDR_ = produces<edm::ValueMap<float>>("genBDR");
   outGenBPdgId_ = produces<edm::ValueMap<int>>("genBPdgId");
   outGenBIdx_ = produces<edm::ValueMap<int>>("genBIdx");
-  for (int i = 0; i < 3; ++i) {
+  for (size_t i = 0; i < kMaxGenLegs; ++i) {
     const std::string L = "leg" + std::to_string(i);
     outLegGenIdx_[i] = produces<edm::ValueMap<int>>(L + "GenIdx");
     outLegGenPdgId_[i] = produces<edm::ValueMap<int>>(L + "GenPdgId");
@@ -463,9 +470,10 @@ void JpsiXKinematicFitProducer::produce(edm::Event& iEvent, const edm::EventSetu
   std::vector<int> genBPdgId(n, 0), genBIdx(n, -1);
   // Per-leg generator match. Leg order is the canonical collectLeaves order,
   // i.e. the same ordering that fills mu0/mu1/kaon TrackIdx downstream.
-  std::array<std::vector<int>, 3> legGenIdx, legGenPdgId, legGenMotherPdgId;
-  std::array<std::vector<float>, 3> legGenPt, legGenDR;
-  for (int i = 0; i < 3; ++i) {
+  std::array<std::vector<int>, kMaxGenLegs> legGenIdx, legGenPdgId,
+      legGenMotherPdgId;
+  std::array<std::vector<float>, kMaxGenLegs> legGenPt, legGenDR;
+  for (size_t i = 0; i < kMaxGenLegs; ++i) {
     legGenIdx[i].assign(n, -1);
     legGenPdgId[i].assign(n, 0);
     legGenMotherPdgId[i].assign(n, 0);
@@ -707,8 +715,8 @@ void JpsiXKinematicFitProducer::produce(edm::Event& iEvent, const edm::EventSetu
     // ---- per-leg generator match + common ancestor (MC only) --------------
     if (haveGen && genH.isValid()) {
       std::vector<const reco::Candidate*> matched;
-      matched.reserve(3);
-      const size_t nLeg = std::min<size_t>(3, leaves.size());
+      matched.reserve(kMaxGenLegs);
+      const size_t nLeg = std::min<size_t>(kMaxGenLegs, leaves.size());
       for (size_t il = 0; il < nLeg; ++il) {
         const reco::RecoChargedCandidate& leg = *leaves[il];
         const reco::GenParticle* best = nullptr;
@@ -814,7 +822,7 @@ void JpsiXKinematicFitProducer::produce(edm::Event& iEvent, const edm::EventSetu
   put(outGenBDR_, genBDR);
   put(outGenBPdgId_, genBPdgId);
   put(outGenBIdx_, genBIdx);
-  for (int i = 0; i < 3; ++i) {
+  for (size_t i = 0; i < kMaxGenLegs; ++i) {
     put(outLegGenIdx_[i], legGenIdx[i]);
     put(outLegGenPdgId_[i], legGenPdgId[i]);
     put(outLegGenMotherPdgId_[i], legGenMotherPdgId[i]);

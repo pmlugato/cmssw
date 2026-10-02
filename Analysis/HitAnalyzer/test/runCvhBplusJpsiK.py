@@ -1062,7 +1062,9 @@ if opts.nanoOut:
         # required. An unmatched leg keeps -1 and is never assigned a nearest
         # neighbour, because a wrong match mislabels the very categories this
         # exists to separate.
-        for _l in (0, 1, 2):
+        # Four legs, not three: the second hadron of a four-body channel
+        # had no gen information at all while this stopped at 2.
+        for _l in (0, 1, 2, 3):
             setattr(process.bplusTable.externalVariables, f'leg{_l}GenIdx',
                     ExtVar(cms.InputTag(_gf, f'leg{_l}GenIdx'), int,
                            doc=f'row in Gen matched to leg {_l} (-1 = none)'))
